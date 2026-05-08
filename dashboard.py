@@ -16,6 +16,9 @@ import os, json, sys, time, threading, webbrowser, subprocess
 from datetime import datetime, timedelta
 from flask import Flask, Response, jsonify, request, render_template_string, send_file
 
+from config import Config
+from dropbox_client import DropboxClient
+
 try:
     from zoneinfo import ZoneInfo
     SCHED_TZ = ZoneInfo("America/New_York")
@@ -31,6 +34,28 @@ AGENT_PATH    = os.path.join(BASE_DIR, "agent.py")
 SCHED_HOURS   = [9, 21]
 
 sys.path.insert(0, BASE_DIR)
+
+# ── Dropbox client (None when DROPBOX_ACCESS_TOKEN is not set) ────────────────
+try:
+    _cfg = Config()
+    _dropbox = DropboxClient(_cfg) if _cfg.DROPBOX_ACCESS_TOKEN else None
+except Exception:
+    _dropbox = None
+
+
+def _serve_pdf(path: str) -> Response:
+    """Serve a PDF from Dropbox (if path is a Dropbox path) or local disk."""
+    if _dropbox and not os.path.isabs(path):
+        # Dropbox paths start with "/" but are not local absolute paths on Railway
+        data = _dropbox.download(path)
+        return Response(data, mimetype="application/pdf")
+    if _dropbox and path.startswith("/") and not os.path.exists(path):
+        # Absolute path that doesn't exist locally — treat as Dropbox path
+        data = _dropbox.download(path)
+        return Response(data, mimetype="application/pdf")
+    with open(path, "rb") as f:
+        return Response(f.read(), mimetype="application/pdf")
+
 
 # ── Live run state ─────────────────────────────────────────────────────────────
 _live_lock     = threading.Lock()
@@ -239,10 +264,11 @@ def pdf_form(encoded_path):
 def pdf_form_po(po):
     with _live_lock:
         path = _live_pdfs.get(po, {}).get("form_pdf_path")
-    if not path or not os.path.exists(path):
+    if not path:
         return "Order form PDF not found", 404
-    with open(path, "rb") as f:
-        return Response(f.read(), mimetype="application/pdf")
+    if not _dropbox and not os.path.exists(path):
+        return "Order form PDF not found on disk", 404
+    return _serve_pdf(path)
 
 @app.route("/pdf/history/<int:run_idx>/<int:order_idx>")
 def pdf_history_form(run_idx, order_idx):
@@ -255,10 +281,11 @@ def pdf_history_form(run_idx, order_idx):
     if order_idx >= len(filled):
         return "Order not found", 404
     path = filled[order_idx].get("pdf_path", "")
-    if not path or not os.path.exists(path):
+    if not path:
+        return "PDF file not found", 404
+    if not _dropbox and not os.path.exists(path):
         return "PDF file not found on disk", 404
-    with open(path, "rb") as f:
-        return Response(f.read(), mimetype="application/pdf")
+    return _serve_pdf(path)
 
 
 # ── HTML ───────────────────────────────────────────────────────────────────────

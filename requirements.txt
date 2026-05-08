@@ -1,5 +1,6 @@
 anthropic>=0.25.0
 apscheduler>=3.10.0
+dropbox>=11.36.0
 flask>=3.0.0
 python-dotenv>=1.0.0
 pypdf>=4.0.0

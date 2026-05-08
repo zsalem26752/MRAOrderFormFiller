@@ -45,5 +45,11 @@ class Config:
     SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
     SLACK_CHANNEL     = os.environ.get("SLACK_CHANNEL",     "")
 
+    # ── Dropbox (optional — enables cloud storage on Railway) ────────────────────
+    # If set, filled PDFs are uploaded to Dropbox instead of local filesystem.
+    # Leave unset for local dev (files saved to FILLED_FORMS_FOLDER as before).
+    DROPBOX_ACCESS_TOKEN = os.environ.get("DROPBOX_ACCESS_TOKEN", "")
+    DROPBOX_FOLDER       = os.environ.get("DROPBOX_FOLDER", "/MRA Order Forms")
+
     # ── Scheduler ────────────────────────────────────────────────────────────
     TIMEZONE = os.environ.get("TIMEZONE", "America/New_York")

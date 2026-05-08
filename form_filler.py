@@ -10,6 +10,7 @@ Workflow for each awning line item:
 Returns a list of FillResult objects — one per awning item filled.
 """
 
+import io
 import os
 import re
 import json
@@ -577,12 +578,11 @@ def build_field_values(
 
 def fill_pdf(
     template_path: str,
-    output_path: str,
     text_fields: dict,
     checkbox_fields: dict,
-) -> None:
+) -> bytes:
     """
-    Fill `template_path` with the provided field values and write to `output_path`.
+    Fill `template_path` with the provided field values and return the PDF bytes.
 
     text_fields:     {field_name: str_value}
     checkbox_fields: {field_name: True/False}
@@ -629,11 +629,9 @@ def fill_pdf(
                     NameObject("/AS"): NameObject("/Off"),
                 })
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "wb") as f:
-        writer.write(f)
-
-    log.info(f"  PDF written: {output_path}")
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
 
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
@@ -644,9 +642,14 @@ def process_invoice(
     forms_folder: str,
     output_folder: str,
     anthropic_api_key: str,
+    dropbox_client=None,
 ) -> list[FillResult]:
     """
     Fill one PDF per awning line item in `invoice`.
+
+    If dropbox_client is provided, filled PDFs are uploaded to Dropbox and
+    pdf_path in each FillResult will be a Dropbox path.
+    Otherwise, PDFs are saved to output_folder on the local filesystem.
 
     Returns a list of FillResult objects (one per awning item).
     """
@@ -709,11 +712,9 @@ def process_invoice(
         customer  = invoice.get("customer_name", "Customer").replace("/", "-")
         item_tag  = f" ({idx + 1})" if len(invoice.get("awning_items", [])) > 1 else ""
         filename  = f"{po_number} - {customer} - {model.title()}{item_tag} Order Form.pdf"
-        dest_dir  = os.path.join(output_folder, today_dir)
-        dest_path = os.path.join(dest_dir, filename)
 
         try:
-            fill_pdf(template_path, dest_path, text_fields, checkbox_fields)
+            pdf_bytes = fill_pdf(template_path, text_fields, checkbox_fields)
         except Exception as e:
             log.error(f"  PDF fill failed: {e}", exc_info=True)
             results.append(FillResult(
@@ -722,13 +723,34 @@ def process_invoice(
             ))
             continue
 
+        # Store the filled PDF — Dropbox if token is configured, local disk otherwise
+        try:
+            if dropbox_client:
+                dropbox_path = dropbox_client.build_path(today_dir, filename)
+                saved_path   = dropbox_client.upload(pdf_bytes, dropbox_path)
+                log.info(f"  Filled form uploaded to Dropbox: {saved_path}")
+            else:
+                dest_dir  = os.path.join(output_folder, today_dir)
+                dest_path = os.path.join(dest_dir, filename)
+                os.makedirs(dest_dir, exist_ok=True)
+                with open(dest_path, "wb") as f:
+                    f.write(pdf_bytes)
+                saved_path = dest_path
+                log.info(f"  Filled form saved locally: {saved_path}")
+        except Exception as e:
+            log.error(f"  Storage failed: {e}", exc_info=True)
+            results.append(FillResult(
+                po_number=po_number, model=model, pdf_path="", item_name=name,
+                success=False, error=f"Storage failed: {e}",
+            ))
+            continue
+
         results.append(FillResult(
             po_number=po_number,
             model=model,
-            pdf_path=dest_path,
+            pdf_path=saved_path,
             item_name=name,
             success=True,
         ))
-        log.info(f"  Filled form saved: {dest_path}")
 
     return results

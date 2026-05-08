@@ -30,6 +30,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from config import Config
 from clickup_client import ClickUpClient
+from dropbox_client import DropboxClient
 from zoho_client import ZohoClient
 from slack_notifier import SlackNotifier
 from form_filler import process_invoice
@@ -107,6 +108,11 @@ def run_agent(source: str = "cron", event_sink=None):
         clickup = ClickUpClient(config)
         zoho    = ZohoClient(config)
         slack   = SlackNotifier(config)
+        dropbox = DropboxClient(config) if config.DROPBOX_ACCESS_TOKEN else None
+        if dropbox:
+            emit("Dropbox storage enabled.", "info")
+        else:
+            emit("Dropbox not configured — saving PDFs to local filesystem.", "info")
 
         status(f"Fetching ClickUp tasks with status: '{config.TRIGGER_STATUS}'")
         try:
@@ -179,6 +185,7 @@ def run_agent(source: str = "cron", event_sink=None):
                         forms_folder=config.SUNESTA_FORMS_FOLDER,
                         output_folder=config.FILLED_FORMS_FOLDER,
                         anthropic_api_key=config.ANTHROPIC_API_KEY,
+                        dropbox_client=dropbox,
                     )
 
                     # 3. Handle results
