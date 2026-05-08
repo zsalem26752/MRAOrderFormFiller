@@ -50,22 +50,41 @@ def test_clickup():
 
 def test_dropbox():
     print("[Dropbox] Connecting...", end=" ", flush=True)
-    token = os.environ.get("DROPBOX_ACCESS_TOKEN", "")
-    if not token:
-        print(f"{SKIP} — DROPBOX_ACCESS_TOKEN not set (local dev mode, no Dropbox needed)")
+    refresh_token = os.environ.get("DROPBOX_REFRESH_TOKEN", "")
+    app_key       = os.environ.get("DROPBOX_APP_KEY",       "")
+    app_secret    = os.environ.get("DROPBOX_APP_SECRET",    "")
+
+    if not refresh_token:
+        print(f"{SKIP} — DROPBOX_REFRESH_TOKEN not set (local dev mode, no Dropbox needed)")
         return True
 
     try:
         import dropbox
         from dropbox.files import WriteMode
 
-        dbx = dropbox.Dropbox(token)
+        dbx = dropbox.Dropbox(
+            oauth2_refresh_token=refresh_token,
+            app_key=app_key,
+            app_secret=app_secret,
+        )
+
+        # Apply team namespace if available
+        try:
+            team_client = dbx.with_path_root(
+                dropbox.common.PathRoot.namespace_id(
+                    dbx.users_get_current_account().root_info.root_namespace_id
+                )
+            )
+            dbx = team_client
+        except Exception:
+            pass  # personal account — no namespace needed
+
         account = dbx.users_get_current_account()
         name    = account.name.display_name
         email   = account.email
 
         # Upload a small test file then delete it
-        folder  = os.environ.get("DROPBOX_FOLDER", "/MRA Order Forms")
+        folder    = os.environ.get("DROPBOX_FOLDER", "/MRA Order Forms")
         test_path = f"{folder.rstrip('/')}/_connection_test.txt"
         dbx.files_upload(b"connection test", test_path, mode=WriteMode.overwrite)
         dbx.files_delete_v2(test_path)

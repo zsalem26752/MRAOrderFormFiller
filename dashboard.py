@@ -35,10 +35,10 @@ SCHED_HOURS   = [9, 21]
 
 sys.path.insert(0, BASE_DIR)
 
-# ── Dropbox client (None when DROPBOX_ACCESS_TOKEN is not set) ────────────────
+# ── Dropbox client (None when OAuth2 creds are not set) ──────────────────────
 try:
     _cfg = Config()
-    _dropbox = DropboxClient(_cfg) if _cfg.DROPBOX_ACCESS_TOKEN else None
+    _dropbox = DropboxClient(_cfg) if _cfg.DROPBOX_REFRESH_TOKEN else None
 except Exception:
     _dropbox = None
 
@@ -83,8 +83,8 @@ def _event_sink(event_type: str, data: dict):
         model    = data.get("model", "")
         # Build a unique slot key: po + model + count of existing entries for this po
         with _live_lock:
-            idx  = sum(1 for k in _live_pdfs if k.startswith(f"{po}:"))
-            slot = f"{po}:{model}:{idx}"
+            idx  = sum(1 for k in _live_pdfs if k.startswith(f"{po}__"))
+            slot = f"{po}__{model}__{idx}"
             _live_pdfs[slot] = {
                 "po":           po,
                 "model":        model,
@@ -827,7 +827,11 @@ body.past-mode #tab-live     { display: none; }
         <div id="lr-log-panel">
           <div id="lr-log-header">
             <h3>Agent Log</h3>
-            <div id="lr-run-summary"></div>
+            <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+              <button id="lr-stop-btn" onclick="stopRun()" style="display:none;padding:5px 14px;border-radius:6px;border:none;cursor:pointer;font-size:12px;font-weight:600;background:#ef4444;color:#fff;white-space:nowrap">&#9632; Stop</button>
+              <button id="lr-run-btn2" onclick="runNow()" style="padding:5px 14px;border-radius:6px;border:none;cursor:pointer;font-size:12px;font-weight:600;background:var(--accent);color:#fff;white-space:nowrap">&#9654; Run Now</button>
+              <div id="lr-run-summary"></div>
+            </div>
           </div>
           <div id="lr-statusbar">
             <div class="spinner" id="lr-spin" style="display:none"></div>
@@ -907,18 +911,34 @@ function pollStatus() {
     var was = _isRunning;
     _isRunning = d.running;
     setStatusDot(_isRunning);
+
+    // Overview tab buttons
     var runBtn  = document.getElementById("run-btn");
     var stopBtn = document.getElementById("stop-btn");
+    // Live Run tab buttons
+    var lrRunBtn2  = document.getElementById("lr-run-btn2");
+    var lrStopBtn  = document.getElementById("lr-stop-btn");
+
     runBtn.disabled = _isRunning;
+    if (lrRunBtn2) lrRunBtn2.disabled = _isRunning;
+
     if (_isRunning) {
       runBtn.innerHTML = '<div class="spinner-sm"></div> Running…';
+      if (lrRunBtn2) { lrRunBtn2.style.display = "none"; }
       stopBtn.style.display = "inline-flex";
       stopBtn.disabled      = d.stop_pending;
       stopBtn.textContent   = d.stop_pending ? "Stopping…" : "⬛ Stop";
+      if (lrStopBtn) {
+        lrStopBtn.style.display = "inline-flex";
+        lrStopBtn.disabled      = d.stop_pending;
+        lrStopBtn.textContent   = d.stop_pending ? "Stopping…" : "⬛ Stop";
+      }
     } else {
       runBtn.innerHTML      = "&#9654; Run Now";
       stopBtn.style.display = "none";
       stopBtn.disabled      = false;
+      if (lrRunBtn2) { lrRunBtn2.style.display = "inline-flex"; lrRunBtn2.disabled = false; lrRunBtn2.innerHTML = "&#9654; Run Now"; }
+      if (lrStopBtn) { lrStopBtn.style.display = "none"; lrStopBtn.disabled = false; }
       if (was && !_isRunning) {
         // run just finished — reload history
         loadHistory();
@@ -930,13 +950,17 @@ function pollStatus() {
 
 // ── Stop ─────────────────────────────────────────────────────────────────────
 function stopRun() {
-  var stopBtn = document.getElementById("stop-btn");
-  stopBtn.disabled    = true;
-  stopBtn.textContent = "Stopping…";
+  var stopBtn   = document.getElementById("stop-btn");
+  var lrStopBtn = document.getElementById("lr-stop-btn");
+  [stopBtn, lrStopBtn].forEach(function(b) { if (b) { b.disabled = true; b.textContent = "Stopping…"; } });
   fetch("/api/stop", {method:"POST"}).then(r => r.json()).then(d => {
-    if (!d.ok) { showToast(d.message || "Could not stop run", true); stopBtn.disabled = false; }
-    else        { showToast("Stop requested — will finish current task", false); }
-  }).catch(() => { stopBtn.disabled = false; });
+    if (!d.ok) {
+      showToast(d.message || "Could not stop run", true);
+      [stopBtn, lrStopBtn].forEach(function(b) { if (b) b.disabled = false; });
+    } else {
+      showToast("Stop requested — will finish current task", false);
+    }
+  }).catch(function() { [stopBtn, lrStopBtn].forEach(function(b) { if (b) b.disabled = false; }); });
 }
 
 function setStatusDot(running) {

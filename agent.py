@@ -107,7 +107,7 @@ def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
                  every log/status event so callers (dashboard SSE) can stream
                  events in real time.
     """
-    global _run_active, _run_events
+    global _run_active, _run_events, _stop_requested
 
     if job_options is None:
         job_options = {"wind_sensor_stock": True, "led_stock": True}
@@ -142,9 +142,9 @@ def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
         clickup = ClickUpClient(config)
         zoho    = ZohoClient(config)
         slack   = SlackNotifier(config)
-        dropbox = DropboxClient(config) if config.DROPBOX_ACCESS_TOKEN else None
+        dropbox = DropboxClient(config) if config.DROPBOX_REFRESH_TOKEN else None
         if dropbox:
-            emit("Dropbox storage enabled.", "info")
+            emit("Dropbox storage enabled (API mode).", "info")
         else:
             emit("Dropbox not configured — saving PDFs to local filesystem.", "info")
 
