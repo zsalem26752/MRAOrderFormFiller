@@ -44,9 +44,10 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Live-run state (used by dashboard SSE stream) ─────────────────────────────
-_run_lock    = threading.Lock()
-_run_events  = []          # list of {"type": str, "data": dict}
-_run_active  = False       # True while a run is in progress
+_run_lock         = threading.Lock()
+_run_events       = []          # list of {"type": str, "data": dict}
+_run_active       = False       # True while a run is in progress
+_stop_requested   = False       # Set to True to cancel after current task
 
 
 def _push(event_type: str, data: dict, sink=None):
@@ -62,6 +63,13 @@ def _push(event_type: str, data: dict, sink=None):
 
 def is_running() -> bool:
     return _run_active
+
+
+def request_stop():
+    """Ask the agent to stop after it finishes the current task."""
+    global _stop_requested
+    with _run_lock:
+        _stop_requested = True
 
 
 def get_events() -> list:
@@ -107,8 +115,9 @@ def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
     with _run_lock:
         if _run_active:
             return  # don't allow concurrent runs
-        _run_active = True
-        _run_events = []
+        _run_active      = True
+        _run_events      = []
+        _stop_requested  = False
 
     def emit(msg: str, level: str = "info"):
         _push("log", {"msg": msg, "level": level}, sink=event_sink)
@@ -163,6 +172,14 @@ def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
         failed_orders = []
 
         for task in tasks:
+            # Check for stop request before starting each new task
+            with _run_lock:
+                should_stop = _stop_requested
+            if should_stop:
+                emit("⛔ Stop requested — halting after current task.", "warn")
+                _push("stopped", {}, sink=event_sink)
+                break
+
             task_id   = task["id"]
             task_name = task["name"]
             emit(f"── Task: {task_name} ({task_id})", "info")
@@ -286,7 +303,8 @@ def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
 
     finally:
         with _run_lock:
-            _run_active = False
+            _run_active      = False
+            _stop_requested  = False
 
 
 def _write_run_log(filled: list, failed: list, source: str = "cron", note: str = ""):

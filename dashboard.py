@@ -44,13 +44,9 @@ except Exception:
 
 
 def _serve_pdf(path: str) -> Response:
-    """Serve a PDF from Dropbox (if path is a Dropbox path) or local disk."""
-    if _dropbox and not os.path.isabs(path):
-        # Dropbox paths start with "/" but are not local absolute paths on Railway
-        data = _dropbox.download(path)
-        return Response(data, mimetype="application/pdf")
-    if _dropbox and path.startswith("/") and not os.path.exists(path):
-        # Absolute path that doesn't exist locally — treat as Dropbox path
+    """Serve a PDF from Dropbox (when token is set) or local disk."""
+    if _dropbox:
+        # On Railway, all saved paths are Dropbox paths — always download from there.
         data = _dropbox.download(path)
         return Response(data, mimetype="application/pdf")
     with open(path, "rb") as f:
@@ -61,7 +57,11 @@ def _serve_pdf(path: str) -> Response:
 _live_lock     = threading.Lock()
 _live_events   = []      # list of {"type": str, "data": dict}
 _live_active   = False
-_live_pdfs     = {}      # po_number → {"invoice_pdf": bytes|None, "form_pdf_path": str|None}
+# Each entry keyed by a unique "slot" = "<po>:<model>:<idx>" so multiple awnings
+# on the same PO don't overwrite each other.
+_live_pdfs     = {}      # slot → {"po": str, "model": str, "task_name": str,
+                         #          "item_name": str, "invoice_pdf": bytes|None,
+                         #          "form_pdf_path": str|None}
 _live_zoho     = None    # ZohoClient instance (created at run time)
 
 
@@ -76,26 +76,43 @@ def _event_sink(event_type: str, data: dict):
 
     _live_push(event_type, data)
 
-    # When a PDF is successfully filled, try to pre-fetch the Zoho invoice PDF
+    # When a PDF is successfully filled, store it and pre-fetch the Zoho invoice PDF
     if event_type == "pdf_ready":
-        po  = data.get("po_number")
-        pdf_path = data.get("pdf_path")
-        if po not in _live_pdfs:
-            _live_pdfs[po] = {"invoice_pdf": None, "form_pdf_path": None}
-        _live_pdfs[po]["form_pdf_path"] = pdf_path
+        po       = data.get("po_number", "")
+        pdf_path = data.get("pdf_path", "")
+        model    = data.get("model", "")
+        # Build a unique slot key: po + model + count of existing entries for this po
+        with _live_lock:
+            idx  = sum(1 for k in _live_pdfs if k.startswith(f"{po}:"))
+            slot = f"{po}:{model}:{idx}"
+            _live_pdfs[slot] = {
+                "po":           po,
+                "model":        model,
+                "task_name":    data.get("task_name", ""),
+                "item_name":    data.get("item_name", ""),
+                "invoice_pdf":  None,
+                "form_pdf_path": pdf_path,
+            }
 
-        # Fetch Zoho invoice PDF in background
+        # Forward the slot key back so the browser can address this specific entry
+        _live_push("pdf_ready_slot", {"slot": slot, "po": po, "model": model,
+                                      "task_name": data.get("task_name", ""),
+                                      "item_name": data.get("item_name", "")})
+
+        # Fetch Zoho invoice PDF in background (shared per-PO — only once)
         if _live_zoho and po:
-            def _fetch_invoice(po_num):
+            def _fetch_invoice(po_num, slot_key):
                 try:
                     pdf_bytes = _live_zoho.get_invoice_pdf(po_num)
                     with _live_lock:
-                        if po_num in _live_pdfs:
-                            _live_pdfs[po_num]["invoice_pdf"] = pdf_bytes
+                        # Store invoice bytes on ALL slots for this PO
+                        for k, v in _live_pdfs.items():
+                            if v["po"] == po_num:
+                                v["invoice_pdf"] = pdf_bytes
                     _live_push("invoice_pdf_ready", {"po_number": po_num})
                 except Exception:
                     pass
-            threading.Thread(target=_fetch_invoice, args=(po,), daemon=True).start()
+            threading.Thread(target=_fetch_invoice, args=(po, slot), daemon=True).start()
 
 
 def _run_live(source: str = "manual", job_options: dict = None):
@@ -206,7 +223,10 @@ def api_schedule():
 
 @app.route("/api/status")
 def api_status():
-    return jsonify({"running": _live_active})
+    import agent as _agent_mod
+    with _live_lock:
+        stop_pending = getattr(_agent_mod, "_stop_requested", False)
+    return jsonify({"running": _live_active, "stop_pending": stop_pending})
 
 @app.route("/api/run", methods=["POST"])
 def api_run():
@@ -220,6 +240,15 @@ def api_run():
         "led_stock":         not bool(body.get("led_with_awning", False)),
     }
     threading.Thread(target=_run_live, args=("manual", job_options), daemon=True).start()
+    return jsonify({"ok": True})
+
+@app.route("/api/stop", methods=["POST"])
+def api_stop():
+    """Request the agent to stop after it finishes the current task."""
+    import agent as _agent_mod
+    if not _live_active:
+        return jsonify({"ok": False, "message": "No run in progress"}), 409
+    _agent_mod.request_stop()
     return jsonify({"ok": True})
 
 @app.route("/api/events")
@@ -244,36 +273,47 @@ def api_events():
 
 @app.route("/api/live/pdfs")
 def api_live_pdfs():
-    """Return list of PO numbers that have PDFs ready."""
+    """Return all filled-form slots for the current live run."""
     with _live_lock:
         return jsonify({
-            po: {
+            slot: {
+                "po":          info["po"],
+                "model":       info["model"],
+                "task_name":   info["task_name"],
+                "item_name":   info["item_name"],
                 "has_invoice": bool(info.get("invoice_pdf")),
-                "has_form":    bool(info.get("form_pdf_path") and os.path.exists(info["form_pdf_path"])),
-                "form_path":   info.get("form_pdf_path", ""),
+                "has_form":    bool(info.get("form_pdf_path")),
             }
-            for po, info in _live_pdfs.items()
+            for slot, info in _live_pdfs.items()
         })
 
 @app.route("/pdf/invoice/<po>")
 def pdf_invoice(po):
+    """Serve the Zoho invoice PDF for a given PO (shared across all slots for that PO)."""
     with _live_lock:
-        pdf = _live_pdfs.get(po, {}).get("invoice_pdf")
+        pdf = None
+        for info in _live_pdfs.values():
+            if info["po"] == po and info.get("invoice_pdf"):
+                pdf = info["invoice_pdf"]
+                break
     if not pdf:
         return "Invoice PDF not yet available", 404
     return Response(pdf, mimetype="application/pdf")
 
 @app.route("/pdf/form/<path:encoded_path>")
 def pdf_form(encoded_path):
-    # encoded_path is URL-encoded actual filesystem path; use po to look it up
-    return "Use /pdf/form/po/<po> instead", 400
+    return "Use /pdf/form/slot/<slot> instead", 400
 
-@app.route("/pdf/form/po/<po>")
-def pdf_form_po(po):
+@app.route("/pdf/form/slot/<path:slot>")
+def pdf_form_slot(slot):
+    """Serve the filled order-form PDF for a specific slot key."""
     with _live_lock:
-        path = _live_pdfs.get(po, {}).get("form_pdf_path")
+        info = _live_pdfs.get(slot)
+    if not info:
+        return "Slot not found", 404
+    path = info.get("form_pdf_path", "")
     if not path:
-        return "Order form PDF not found", 404
+        return "Order form PDF not ready", 404
     if not _dropbox and not os.path.exists(path):
         return "Order form PDF not found on disk", 404
     return _serve_pdf(path)
@@ -731,7 +771,10 @@ body.past-mode #tab-live     { display: none; }
       <div class="panel-label">Next Scheduled Runs</div>
       <div id="schedule-cards"><span style="color:var(--muted);font-size:12px">Loading…</span></div>
     </div>
-    <button id="run-btn" onclick="runNow()">&#9654; Run Now</button>
+      <div style="display:flex;gap:8px;align-self:flex-end">
+      <button id="stop-btn" onclick="stopRun()" style="display:none;padding:9px 18px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;background:#ef4444;color:#fff;transition:opacity .15s">&#9632; Stop</button>
+      <button id="run-btn" onclick="runNow()">&#9654; Run Now</button>
+    </div>
   </div>
 
   <div id="stats-bar">
@@ -864,12 +907,18 @@ function pollStatus() {
     var was = _isRunning;
     _isRunning = d.running;
     setStatusDot(_isRunning);
-    document.getElementById("run-btn").disabled   = _isRunning;
+    var runBtn  = document.getElementById("run-btn");
+    var stopBtn = document.getElementById("stop-btn");
+    runBtn.disabled = _isRunning;
     if (_isRunning) {
-      document.getElementById("run-btn").innerHTML =
-        '<div class="spinner-sm"></div> Running…';
+      runBtn.innerHTML = '<div class="spinner-sm"></div> Running…';
+      stopBtn.style.display = "inline-flex";
+      stopBtn.disabled      = d.stop_pending;
+      stopBtn.textContent   = d.stop_pending ? "Stopping…" : "⬛ Stop";
     } else {
-      document.getElementById("run-btn").innerHTML = "&#9654; Run Now";
+      runBtn.innerHTML      = "&#9654; Run Now";
+      stopBtn.style.display = "none";
+      stopBtn.disabled      = false;
       if (was && !_isRunning) {
         // run just finished — reload history
         loadHistory();
@@ -877,6 +926,17 @@ function pollStatus() {
     }
   });
   setTimeout(pollStatus, 2000);
+}
+
+// ── Stop ─────────────────────────────────────────────────────────────────────
+function stopRun() {
+  var stopBtn = document.getElementById("stop-btn");
+  stopBtn.disabled    = true;
+  stopBtn.textContent = "Stopping…";
+  fetch("/api/stop", {method:"POST"}).then(r => r.json()).then(d => {
+    if (!d.ok) { showToast(d.message || "Could not stop run", true); stopBtn.disabled = false; }
+    else        { showToast("Stop requested — will finish current task", false); }
+  }).catch(() => { stopBtn.disabled = false; });
 }
 
 function setStatusDot(running) {
@@ -1016,7 +1076,7 @@ function collapseAll(){ document.querySelectorAll(".run").forEach(function(r) { 
 
 // ── Live Run ─────────────────────────────────────────────────────────────────
 function startLiveRun() {
-  _lrPdfs = {};
+  _lrPdfs = {};           // slot → {po, model, task_name, item_name, has_invoice}
   _lrSelected = null;
   document.getElementById("lr-idle").style.display = "none";
   document.getElementById("lr-main").style.display = "flex";
@@ -1042,27 +1102,37 @@ function startLiveRun() {
     appendLog(d.msg, "status");
   });
 
-  _lrSSE.addEventListener("pdf_ready", function(e) {
+  // pdf_ready_slot fires after the PDF is fully saved; carries a unique slot key
+  _lrSSE.addEventListener("pdf_ready_slot", function(e) {
     var d = JSON.parse(e.data);
-    _lrPdfs[d.po_number] = {
-      has_invoice: false,
-      has_form:    true,
-      item_name:   d.item_name || "",
+    _lrPdfs[d.slot] = {
+      po:          d.po        || "",
       model:       d.model     || "",
       task_name:   d.task_name || "",
+      item_name:   d.item_name || "",
+      has_invoice: false,
     };
     renderLrPdfList();
-    // Auto-select first PDF
-    if (!_lrSelected) selectLrPdf(d.po_number);
+    // Auto-select the first form that comes in
+    if (!_lrSelected) selectLrSlot(d.slot);
   });
 
   _lrSSE.addEventListener("invoice_pdf_ready", function(e) {
     var d = JSON.parse(e.data);
-    if (_lrPdfs[d.po_number]) {
-      _lrPdfs[d.po_number].has_invoice = true;
-      renderLrPdfList();
-      if (_lrSelected === d.po_number) loadInvoicePdf(d.po_number);
+    // Mark all slots for this PO as having an invoice
+    Object.keys(_lrPdfs).forEach(function(slot) {
+      if (_lrPdfs[slot].po === d.po_number) _lrPdfs[slot].has_invoice = true;
+    });
+    renderLrPdfList();
+    // If the currently selected slot belongs to this PO, load the invoice iframe
+    if (_lrSelected && _lrPdfs[_lrSelected] && _lrPdfs[_lrSelected].po === d.po_number) {
+      loadInvoicePdf(d.po_number);
     }
+  });
+
+  _lrSSE.addEventListener("stopped", function(e) {
+    showLrStatus("Run stopped by user.", false);
+    appendLog("⛔ Run stopped by user.", "warn");
   });
 
   _lrSSE.addEventListener("complete", function(e) {
@@ -1107,32 +1177,34 @@ function appendLog(msg, level) {
 }
 
 function renderLrPdfList() {
-  var list  = document.getElementById("lr-pdf-list");
-  var count = document.getElementById("lr-pdf-count");
-  var pos   = Object.keys(_lrPdfs);
-  count.textContent = "(" + pos.length + ")";
-  list.innerHTML = pos.map(function(po) {
-    var p   = _lrPdfs[po];
-    var active = _lrSelected === po ? " active" : "";
-    var invStatus = p.has_invoice ? "Invoice PDF ready" : "Invoice PDF loading…";
-    return '<div class="lr-pdf-item' + active + '" onclick="selectLrPdf(\'' + po + '\')">' +
-      '<div class="lr-pdf-name">' + esc(p.task_name || po) + '</div>' +
-      '<div class="lr-pdf-model">' + esc(p.model) + '</div>' +
-      '<div class="lr-pdf-status">PO #' + esc(po) + ' &middot; ' + invStatus + '</div>' +
+  var list   = document.getElementById("lr-pdf-list");
+  var count  = document.getElementById("lr-pdf-count");
+  var slots  = Object.keys(_lrPdfs);
+  count.textContent = "(" + slots.length + ")";
+  list.innerHTML = slots.map(function(slot) {
+    var p      = _lrPdfs[slot];
+    var active = _lrSelected === slot ? " active" : "";
+    var invSt  = p.has_invoice ? "Invoice PDF ready" : "Invoice PDF loading…";
+    var label  = p.task_name || p.po || slot;
+    var model  = p.model ? p.model.charAt(0).toUpperCase() + p.model.slice(1) : "";
+    return '<div class="lr-pdf-item' + active + '" onclick="selectLrSlot(\'' + slot.replace(/'/g,"\\'") + '\')">' +
+      '<div class="lr-pdf-name">' + esc(label) + '</div>' +
+      (model ? '<div class="lr-pdf-model">' + esc(model) + '</div>' : '') +
+      '<div class="lr-pdf-status">PO #' + esc(p.po) + ' &middot; ' + invSt + '</div>' +
     '</div>';
   }).join("");
 }
 
-function selectLrPdf(po) {
-  _lrSelected = po;
+function selectLrSlot(slot) {
+  _lrSelected = slot;
   renderLrPdfList();
-  var p = _lrPdfs[po];
+  var p = _lrPdfs[slot];
   if (!p) return;
 
   // Invoice pane
-  document.getElementById("lbl-invoice").textContent = "PO #" + po;
+  document.getElementById("lbl-invoice").textContent = "PO #" + p.po;
   if (p.has_invoice) {
-    loadInvoicePdf(po);
+    loadInvoicePdf(p.po);
   } else {
     var ph = document.getElementById("ph-invoice");
     ph.style.display = "flex";
@@ -1142,8 +1214,9 @@ function selectLrPdf(po) {
   }
 
   // Form pane
-  document.getElementById("lbl-form").textContent = p.model ? p.model.charAt(0).toUpperCase() + p.model.slice(1) + " Order Form" : "Order Form";
-  loadFormPdf(po);
+  var modelLabel = p.model ? p.model.charAt(0).toUpperCase() + p.model.slice(1) + " Order Form" : "Order Form";
+  document.getElementById("lbl-form").textContent = modelLabel;
+  loadFormPdf(slot);
 }
 
 function loadInvoicePdf(po) {
@@ -1154,11 +1227,11 @@ function loadInvoicePdf(po) {
   if (existing) existing.remove();
   var iframe = document.createElement("iframe");
   iframe.id  = "iframe-invoice";
-  iframe.src = "/pdf/invoice/" + po + "?t=" + Date.now();
+  iframe.src = "/pdf/invoice/" + encodeURIComponent(po) + "?t=" + Date.now();
   pane.appendChild(iframe);
 }
 
-function loadFormPdf(po) {
+function loadFormPdf(slot) {
   var pane = document.getElementById("pane-form");
   var ph   = document.getElementById("ph-form");
   ph.style.display = "none";
@@ -1166,7 +1239,7 @@ function loadFormPdf(po) {
   if (existing) existing.remove();
   var iframe = document.createElement("iframe");
   iframe.id  = "iframe-form";
-  iframe.src = "/pdf/form/po/" + po + "?t=" + Date.now();
+  iframe.src = "/pdf/form/slot/" + encodeURIComponent(slot) + "?t=" + Date.now();
   pane.appendChild(iframe);
 }
 
