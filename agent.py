@@ -69,7 +69,29 @@ def get_events() -> list:
         return list(_run_events)
 
 
-def run_agent(source: str = "cron", event_sink=None):
+def prompt_job_options() -> dict:
+    """Ask the user at job start how to handle wind sensors and LEDs."""
+    print()
+    print("─" * 50)
+    print("  JOB OPTIONS — answer before processing begins")
+    print("─" * 50)
+
+    ws = input("  Wind sensors — order WITH the awning? [y/N]: ").strip().lower()
+    wind_sensor_stock = ws not in ("y", "yes")
+
+    led = input("  LED lights   — order WITH the awning? [y/N]: ").strip().lower()
+    led_stock = led not in ("y", "yes")
+
+    print()
+    print(f"  Wind sensors: {'ORDER with awning' if not wind_sensor_stock else 'from STOCK'}")
+    print(f"  LED lights:   {'ORDER with awning' if not led_stock else 'from STOCK'}")
+    print("─" * 50)
+    print()
+
+    return {"wind_sensor_stock": wind_sensor_stock, "led_stock": led_stock}
+
+
+def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
     """
     Main agent entry-point.
 
@@ -78,6 +100,9 @@ def run_agent(source: str = "cron", event_sink=None):
                  events in real time.
     """
     global _run_active, _run_events
+
+    if job_options is None:
+        job_options = {"wind_sensor_stock": True, "led_stock": True}
 
     with _run_lock:
         if _run_active:
@@ -186,6 +211,7 @@ def run_agent(source: str = "cron", event_sink=None):
                         output_folder=config.FILLED_FORMS_FOLDER,
                         anthropic_api_key=config.ANTHROPIC_API_KEY,
                         dropbox_client=dropbox,
+                        job_options=job_options,
                     )
 
                     # 3. Handle results
@@ -292,7 +318,8 @@ if __name__ == "__main__":
 
     if len(sys.argv) > 1 and sys.argv[1] == "--now":
         log.info("Running agent immediately (--now flag)…")
-        run_agent(source="manual")
+        opts = prompt_job_options()
+        run_agent(source="manual", job_options=opts)
     else:
         log.info("Order Form Filler Agent starting…")
         log.info("Scheduled: 9:00 AM and 9:00 PM daily (America/New_York)")

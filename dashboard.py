@@ -98,8 +98,11 @@ def _event_sink(event_type: str, data: dict):
             threading.Thread(target=_fetch_invoice, args=(po,), daemon=True).start()
 
 
-def _run_live(source: str = "manual"):
+def _run_live(source: str = "manual", job_options: dict = None):
     global _live_active, _live_events, _live_pdfs, _live_zoho
+
+    if job_options is None:
+        job_options = {"wind_sensor_stock": True, "led_stock": True}
 
     with _live_lock:
         _live_active = True
@@ -117,7 +120,7 @@ def _run_live(source: str = "manual"):
             _live_zoho = None
 
         import agent
-        agent.run_agent(source=source, event_sink=_event_sink)
+        agent.run_agent(source=source, event_sink=_event_sink, job_options=job_options)
     finally:
         with _live_lock:
             _live_active = False
@@ -211,7 +214,12 @@ def api_run():
     with _live_lock:
         if _live_active:
             return jsonify({"ok": False, "message": "Agent is already running"}), 409
-    threading.Thread(target=_run_live, args=("manual",), daemon=True).start()
+    body = request.get_json(silent=True) or {}
+    job_options = {
+        "wind_sensor_stock": not bool(body.get("wind_sensor_with_awning", False)),
+        "led_stock":         not bool(body.get("led_with_awning", False)),
+    }
+    threading.Thread(target=_run_live, args=("manual", job_options), daemon=True).start()
     return jsonify({"ok": True})
 
 @app.route("/api/events")

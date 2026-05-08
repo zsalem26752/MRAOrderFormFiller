@@ -10,16 +10,24 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-# Line item types to skip when looking for awning items
-_SKIP_KEYWORDS = [
-    "warranty", "discount", "delivery", "freight", "shipping",
-    "installation", "service", "tax", "adjustment",
-]
+# Exact awning product names (lowercased, straight quotes) that should produce a
+# filled order form. Anything not in this set is ignored — no blocklist needed.
+# Note: Zoho sometimes uses curly/smart quotes; _normalize_name() handles that.
+_AWNING_NAMES = {
+    'sunesta "sunesta" motorized awning',
+    'sunesta "sunstyle" motorized awning',
+    'sunesta "sunlight" motorized awning',
+    'sunesta "sunlite" motorized awning',   # alternate spelling used on some invoices
+}
 
-# Keywords that identify an awning line item
-_AWNING_KEYWORDS = [
-    "sunesta", "sunstyle", "sunlight", "sunlite", "awning",
-]
+
+def _normalize_name(name: str) -> str:
+    """Lowercase and replace curly/smart quotes with straight quotes."""
+    return (
+        name.lower()
+        .replace('“', '"').replace('”', '"')  # " "
+        .replace('‘', "'").replace('’', "'")  # ' '
+    )
 
 
 class ZohoClient:
@@ -88,22 +96,20 @@ class ZohoClient:
             "shipping_city":   shipping.get("city",   ""),
             "shipping_state":  shipping.get("state",  ""),
             "shipping_zip":    shipping.get("zip",    "") or shipping.get("zip_code", ""),
-            "phone":           invoice.get("contact_persons", [{}])[0].get("phone", "")
-                               if invoice.get("contact_persons") else "",
+            "phone":           (invoice.get("contact_persons") or [{}])[0].get("phone", "")
+                               if isinstance((invoice.get("contact_persons") or [None])[0], dict)
+                               else invoice.get("phone", "") or "",
             "awning_items": [],
         }
 
         # ── Filter awning line items ─────────────────────────────────────────
+        # Only the three known Sunesta product names produce an order form.
+        # Everything else (disclaimers, installation, tax, freight, etc.) is ignored.
         for item in invoice.get("line_items", []):
             name = item.get("name", "") or ""
             desc = item.get("description", "") or ""
-            combined = (name + " " + desc).lower()
 
-            # Skip non-awning items
-            if any(kw in combined for kw in _SKIP_KEYWORDS):
-                log.info(f"  Skipping line item: {name[:60]}")
-                continue
-            if not any(kw in combined for kw in _AWNING_KEYWORDS):
+            if _normalize_name(name.strip()) not in _AWNING_NAMES:
                 log.info(f"  Skipping non-awning item: {name[:60]}")
                 continue
 

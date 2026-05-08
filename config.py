@@ -2,7 +2,7 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 # Base directory of this file — used for relative path defaults
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
