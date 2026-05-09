@@ -266,14 +266,22 @@ def api_events():
     """SSE stream of live run events."""
     def generate():
         sent = 0
+        idle_ticks = 0
         while True:
             with _live_lock:
                 events = list(_live_events)
                 active = _live_active
-            while sent < len(events):
-                ev = events[sent]
-                sent += 1
-                yield "event: {}\ndata: {}\n\n".format(ev["type"], json.dumps(ev["data"]))
+            if sent < len(events):
+                idle_ticks = 0
+                while sent < len(events):
+                    ev = events[sent]
+                    sent += 1
+                    yield "event: {}\ndata: {}\n\n".format(ev["type"], json.dumps(ev["data"]))
+            else:
+                idle_ticks += 1
+                # Send a keepalive comment every ~15s so proxies don't drop the connection
+                if idle_ticks % 60 == 0:
+                    yield ": keepalive\n\n"
             # End stream once run is done and all events sent
             if not active and sent >= len(events):
                 break
@@ -771,19 +779,33 @@ body.past-mode #tab-live     { display: none; }
 <!-- ═══════════════ RUN MODE MODAL ═══════════════ -->
 <div id="run-mode-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center" onclick="if(event.target===this)closeRunModal()">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:32px;max-width:460px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,.6)"  onclick="event.stopPropagation()">
-    <h2 style="margin:0 0 8px;font-size:18px;letter-spacing:.04em;color:#fefefe">Select Run Mode</h2>
-    <p style="color:#fefefe;font-size:13px;margin:0 0 24px;opacity:.7">Choose how the agent should move between orders.</p>
-    <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:24px">
-      <button onclick="startRunWithMode(false)" style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:16px 18px;border-radius:10px;border:1px solid var(--border);background:var(--bg);cursor:pointer;text-align:left;transition:border-color .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-        <span style="font-size:14px;font-weight:700;color:#fefefe">&#9654;&#9654; Auto Run</span>
-        <span style="font-size:12px;color:#fefefe;opacity:.6">Process all orders back-to-back without stopping.</span>
+    <h2 style="margin:0 0 8px;font-size:18px;letter-spacing:.04em;color:#fefefe">Start New Run</h2>
+    <p style="color:#fefefe;font-size:13px;margin:0 0 20px;opacity:.7">Set options before the agent begins processing orders.</p>
+
+    <div style="margin-bottom:20px;padding:14px 16px;border-radius:10px;border:1px solid var(--border);background:var(--bg)">
+      <div style="font-size:12px;font-weight:700;color:#fefefe;opacity:.5;letter-spacing:.08em;margin-bottom:10px">ACCESSORIES</div>
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-bottom:8px">
+        <input type="checkbox" id="modal-wind-sensor" style="width:16px;height:16px;cursor:pointer">
+        <span style="font-size:13px;color:#fefefe">Order wind sensor <strong>with</strong> the awning <span style="opacity:.5;font-weight:400">(uncheck = from stock, skip on form)</span></span>
+      </label>
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+        <input type="checkbox" id="modal-led" style="width:16px;height:16px;cursor:pointer">
+        <span style="font-size:13px;color:#fefefe">Order LED lights <strong>with</strong> the awning <span style="opacity:.5;font-weight:400">(uncheck = from stock, skip on form)</span></span>
+      </label>
+    </div>
+
+    <div style="font-size:12px;font-weight:700;color:#fefefe;opacity:.5;letter-spacing:.08em;margin-bottom:10px">RUN MODE</div>
+    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px">
+      <button onclick="startRunWithMode(false)" style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:14px 16px;border-radius:10px;border:1px solid var(--border);background:var(--bg);cursor:pointer;text-align:left;transition:border-color .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+        <span style="font-size:13px;font-weight:700;color:#fefefe">&#9654;&#9654; Auto Run</span>
+        <span style="font-size:12px;color:#fefefe;opacity:.5">Process all orders back-to-back without stopping.</span>
       </button>
-      <button onclick="startRunWithMode(true)" style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:16px 18px;border-radius:10px;border:1px solid var(--border);background:var(--bg);cursor:pointer;text-align:left;transition:border-color .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-        <span style="font-size:14px;font-weight:700;color:#fefefe">&#9646;&#9646; One At A Time</span>
-        <span style="font-size:12px;color:#fefefe;opacity:.6">Pause after each order so you can review before continuing.</span>
+      <button onclick="startRunWithMode(true)" style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:14px 16px;border-radius:10px;border:1px solid var(--border);background:var(--bg);cursor:pointer;text-align:left;transition:border-color .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+        <span style="font-size:13px;font-weight:700;color:#fefefe">&#9646;&#9646; One At A Time</span>
+        <span style="font-size:12px;color:#fefefe;opacity:.5">Pause after each order so you can review before continuing.</span>
       </button>
     </div>
-    <button onclick="closeRunModal()" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border);background:transparent;color:#fefefe;opacity:.6;cursor:pointer;font-size:13px">Cancel</button>
+    <button onclick="closeRunModal()" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border);background:transparent;color:#fefefe;opacity:.5;cursor:pointer;font-size:13px">Cancel</button>
   </div>
 </div>
 
@@ -1014,8 +1036,10 @@ function setStatusDot(running) {
 // ── Run Mode Modal ───────────────────────────────────────────────────────────
 function runNow() {
   if (_isRunning) return;
-  var modal = document.getElementById("run-mode-modal");
-  modal.style.display = "flex";
+  // Reset checkboxes to unchecked (from stock) each time modal opens
+  document.getElementById("modal-wind-sensor").checked = false;
+  document.getElementById("modal-led").checked = false;
+  document.getElementById("run-mode-modal").style.display = "flex";
 }
 
 function closeRunModal() {
@@ -1023,11 +1047,17 @@ function closeRunModal() {
 }
 
 function startRunWithMode(pauseBetweenTasks) {
+  var windWithAwning = document.getElementById("modal-wind-sensor").checked;
+  var ledWithAwning  = document.getElementById("modal-led").checked;
   closeRunModal();
   fetch("/api/run", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({pause_between_tasks: pauseBetweenTasks})
+    body: JSON.stringify({
+      pause_between_tasks:    pauseBetweenTasks,
+      wind_sensor_with_awning: windWithAwning,
+      led_with_awning:         ledWithAwning,
+    })
   }).then(r => r.json()).then(d => {
     if (!d.ok) { showToast(d.message || "Failed to start run", true); return; }
     showToast("Run started", false);
