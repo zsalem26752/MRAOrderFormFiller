@@ -236,10 +236,20 @@ def api_run():
             return jsonify({"ok": False, "message": "Agent is already running"}), 409
     body = request.get_json(silent=True) or {}
     job_options = {
-        "wind_sensor_stock": not bool(body.get("wind_sensor_with_awning", False)),
-        "led_stock":         not bool(body.get("led_with_awning", False)),
+        "wind_sensor_stock":  not bool(body.get("wind_sensor_with_awning", False)),
+        "led_stock":          not bool(body.get("led_with_awning", False)),
+        "pause_between_tasks": bool(body.get("pause_between_tasks", False)),
     }
     threading.Thread(target=_run_live, args=("manual", job_options), daemon=True).start()
+    return jsonify({"ok": True})
+
+@app.route("/api/resume", methods=["POST"])
+def api_resume():
+    """Resume the agent after a between-task pause (one-at-a-time mode)."""
+    import agent as _agent_mod
+    if not _live_active:
+        return jsonify({"ok": False, "message": "No run in progress"}), 409
+    _agent_mod.resume_run()
     return jsonify({"ok": True})
 
 @app.route("/api/stop", methods=["POST"])
@@ -758,6 +768,25 @@ body.past-mode #tab-live     { display: none; }
   </div>
 </header>
 
+<!-- ═══════════════ RUN MODE MODAL ═══════════════ -->
+<div id="run-mode-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center" onclick="if(event.target===this)closeRunModal()">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:32px;max-width:460px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,.6)"  onclick="event.stopPropagation()">
+    <h2 style="margin:0 0 8px;font-size:18px;letter-spacing:.04em">Select Run Mode</h2>
+    <p style="color:var(--muted);font-size:13px;margin:0 0 24px">Choose how the agent should move between orders.</p>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:24px">
+      <button onclick="startRunWithMode(false)" style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:16px 18px;border-radius:10px;border:1px solid var(--border);background:var(--bg);cursor:pointer;text-align:left;transition:border-color .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+        <span style="font-size:14px;font-weight:700;color:var(--fg)">&#9654;&#9654; Auto Run</span>
+        <span style="font-size:12px;color:var(--muted)">Process all orders back-to-back without stopping.</span>
+      </button>
+      <button onclick="startRunWithMode(true)" style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:16px 18px;border-radius:10px;border:1px solid var(--border);background:var(--bg);cursor:pointer;text-align:left;transition:border-color .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+        <span style="font-size:14px;font-weight:700;color:var(--fg)">&#9646;&#9646; One At A Time</span>
+        <span style="font-size:12px;color:var(--muted)">Pause after each order so you can review before continuing.</span>
+      </button>
+    </div>
+    <button onclick="closeRunModal()" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-size:13px">Cancel</button>
+  </div>
+</div>
+
 <div id="tab-bar">
   <button class="tab-btn active" id="tab-ov-btn" onclick="switchTab('overview')">Overview</button>
   <button class="tab-btn"        id="tab-lv-btn" onclick="switchTab('live')">&#9654; Live Run</button>
@@ -793,6 +822,17 @@ body.past-mode #tab-live     { display: none; }
 
 <!-- ═══════════════ LIVE RUN TAB ═══════════════ -->
 <div id="tab-live">
+
+  <div id="lr-pause-banner" style="display:none;background:linear-gradient(135deg,#1e3a5f,#1a2e4a);border:1px solid #3b82f6;border-radius:10px;padding:16px 20px;margin:12px 12px 0;display:none;align-items:center;justify-content:space-between;gap:16px">
+    <div>
+      <div style="font-size:14px;font-weight:700;color:#93c5fd;margin-bottom:2px">&#9646;&#9646; Paused — One At A Time Mode</div>
+      <div id="lr-pause-remaining" style="font-size:12px;color:#64748b"></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-shrink:0">
+      <button onclick="resumeRun()" id="lr-continue-btn" style="padding:8px 18px;border-radius:7px;border:none;cursor:pointer;font-size:13px;font-weight:700;background:#3b82f6;color:#fff">&#9654; Continue to Next Order</button>
+      <button onclick="stopRun()" style="padding:8px 14px;border-radius:7px;border:1px solid #ef4444;cursor:pointer;font-size:13px;font-weight:600;background:transparent;color:#ef4444">Stop Here</button>
+    </div>
+  </div>
 
   <div id="lr-idle">
     <h3>No active run</h3>
@@ -970,15 +1010,38 @@ function setStatusDot(running) {
   txt.textContent = running ? "RUNNING" : "IDLE";
 }
 
-// ── Run Now ─────────────────────────────────────────────────────────────────
+// ── Run Mode Modal ───────────────────────────────────────────────────────────
 function runNow() {
   if (_isRunning) return;
-  fetch("/api/run", {method:"POST"}).then(r => r.json()).then(d => {
+  var modal = document.getElementById("run-mode-modal");
+  modal.style.display = "flex";
+}
+
+function closeRunModal() {
+  document.getElementById("run-mode-modal").style.display = "none";
+}
+
+function startRunWithMode(pauseBetweenTasks) {
+  closeRunModal();
+  fetch("/api/run", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({pause_between_tasks: pauseBetweenTasks})
+  }).then(r => r.json()).then(d => {
     if (!d.ok) { showToast(d.message || "Failed to start run", true); return; }
     showToast("Run started", false);
-    // Switch to live tab and attach SSE
     switchTab("live");
     startLiveRun();
+  });
+}
+
+// ── Resume (one-at-a-time mode) ──────────────────────────────────────────────
+function resumeRun() {
+  var btn = document.getElementById("lr-continue-btn");
+  if (btn) btn.disabled = true;
+  fetch("/api/resume", {method:"POST"}).then(r => r.json()).then(d => {
+    if (!d.ok) { showToast(d.message || "Resume failed", true); if (btn) btn.disabled = false; return; }
+    document.getElementById("lr-pause-banner").style.display = "none";
   });
 }
 
@@ -1102,6 +1165,7 @@ function collapseAll(){ document.querySelectorAll(".run").forEach(function(r) { 
 function startLiveRun() {
   _lrPdfs = {};           // slot → {po, model, task_name, item_name, has_invoice}
   _lrSelected = null;
+  document.getElementById("lr-pause-banner").style.display = "none";
   document.getElementById("lr-idle").style.display = "none";
   document.getElementById("lr-main").style.display = "flex";
   document.getElementById("lr-pdf-list").innerHTML = "";
@@ -1154,7 +1218,19 @@ function startLiveRun() {
     }
   });
 
+  _lrSSE.addEventListener("task_complete_pause", function(e) {
+    var d = JSON.parse(e.data);
+    var remaining = d.remaining || 0;
+    var banner = document.getElementById("lr-pause-banner");
+    var remEl  = document.getElementById("lr-pause-remaining");
+    remEl.textContent = remaining + " order" + (remaining !== 1 ? "s" : "") + " remaining after this one";
+    banner.style.display = "flex";
+    var btn = document.getElementById("lr-continue-btn");
+    if (btn) btn.disabled = false;
+  });
+
   _lrSSE.addEventListener("stopped", function(e) {
+    document.getElementById("lr-pause-banner").style.display = "none";
     showLrStatus("Run stopped by user.", false);
     appendLog("⛔ Run stopped by user.", "warn");
   });
@@ -1162,6 +1238,7 @@ function startLiveRun() {
   _lrSSE.addEventListener("complete", function(e) {
     var d = JSON.parse(e.data);
     _lrSSE.close(); _lrSSE = null;
+    document.getElementById("lr-pause-banner").style.display = "none";
     showLrStatus("Run complete.", false);
     var nf = (d.filled || []).length;
     var nd = (d.failed || []).length;

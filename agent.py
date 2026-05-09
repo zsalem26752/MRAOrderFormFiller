@@ -48,6 +48,7 @@ _run_lock         = threading.Lock()
 _run_events       = []          # list of {"type": str, "data": dict}
 _run_active       = False       # True while a run is in progress
 _stop_requested   = False       # Set to True to cancel after current task
+_resume_event     = threading.Event()  # Used in "one at a time" mode to gate between tasks
 
 
 def _push(event_type: str, data: dict, sink=None):
@@ -70,6 +71,12 @@ def request_stop():
     global _stop_requested
     with _run_lock:
         _stop_requested = True
+    _resume_event.set()  # unblock any pause so the stop is seen immediately
+
+
+def resume_run():
+    """Resume the agent after a between-task pause (one-at-a-time mode)."""
+    _resume_event.set()
 
 
 def get_events() -> list:
@@ -111,6 +118,8 @@ def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
 
     if job_options is None:
         job_options = {"wind_sensor_stock": True, "led_stock": True}
+
+    _resume_event.clear()
 
     with _run_lock:
         if _run_active:
@@ -171,7 +180,7 @@ def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
         filled_orders = []
         failed_orders = []
 
-        for task in tasks:
+        for task_idx, task in enumerate(tasks):
             # Check for stop request before starting each new task
             with _run_lock:
                 should_stop = _stop_requested
@@ -286,6 +295,19 @@ def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
                         pass
                 except Exception as e:
                     emit(f"  Failed to update ClickUp status: {e}", "error")
+
+            # In one-at-a-time mode, pause between tasks and wait for user to continue
+            has_more_tasks = task_idx < len(tasks) - 1
+            if job_options.get("pause_between_tasks") and has_more_tasks:
+                emit("⏸ Paused — review the filled form, then click Continue.", "info")
+                _push("task_complete_pause", {"remaining": len(tasks) - task_idx - 1}, sink=event_sink)
+                _resume_event.clear()
+                _resume_event.wait()  # blocks until resume_run() or request_stop() is called
+                with _run_lock:
+                    if _stop_requested:
+                        emit("⛔ Stop requested during pause.", "warn")
+                        _push("stopped", {}, sink=event_sink)
+                        break
 
         # Slack summaries
         if filled_orders:
