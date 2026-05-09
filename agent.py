@@ -279,22 +279,16 @@ def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
                     except Exception:
                         pass
 
-            # Advance ClickUp status if everything succeeded
+            # Log filled forms to ClickUp as a comment (status move is manual)
             if task_all_ok and task_filled:
                 try:
-                    clickup.update_status(task_id, config.NEXT_STATUS)
-                    emit(f"  → ClickUp status set to '{config.NEXT_STATUS}'", "success")
-                    try:
-                        models = ", ".join(sorted({r.model.title() for r in task_filled}))
-                        clickup.add_comment(
-                            task_id,
-                            f"Form Filler: {len(task_filled)} {models} form(s) filled and "
-                            f"saved to Dropbox. Moving to '{config.NEXT_STATUS}'.",
-                        )
-                    except Exception:
-                        pass
-                except Exception as e:
-                    emit(f"  Failed to update ClickUp status: {e}", "error")
+                    models = ", ".join(sorted({r.model.title() for r in task_filled}))
+                    clickup.add_comment(
+                        task_id,
+                        f"Form Filler: {len(task_filled)} {models} form(s) filled and saved to Dropbox.",
+                    )
+                except Exception:
+                    pass
 
             # In one-at-a-time mode, pause between tasks and wait for user to continue
             has_more_tasks = task_idx < len(tasks) - 1

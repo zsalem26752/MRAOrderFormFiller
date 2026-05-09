@@ -21,7 +21,7 @@ from typing import Optional
 
 import anthropic
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NameObject
+from pypdf.generic import NameObject, create_string_object
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +54,7 @@ def _bracket_count(width_ft: float) -> int:
     if width_ft <= 9:   return 2
     if width_ft <= 10:  return 3
     if width_ft <= 16:  return 4
+    if width_ft <= 17:  return 5
     if width_ft <= 21:  return 6
     if width_ft <= 22:  return 7
     return 8
@@ -821,6 +822,22 @@ def fill_pdf(template_path: str, text_fields: dict, checkbox_fields: dict) -> by
                 annot.update({NameObject("/V"): NameObject(on_state), NameObject("/AS"): NameObject(on_state)})
             else:
                 annot.update({NameObject("/V"): NameObject("/Off"), NameObject("/AS"): NameObject("/Off")})
+
+    # Fix font size for Width and Projection fields — default auto-size (0) can
+    # overflow the box for large values like 20'0". Force 17pt across all pages.
+    _FIXED_FONT_FIELDS = {"Width", "Projection"}
+    _FIXED_DA = "/Helv 17 Tf 0 g"
+    for page in writer.pages:
+        annots = page.get("/Annots")
+        if not annots:
+            continue
+        for annot_ref in annots:
+            try:
+                annot = annot_ref.get_object()
+            except Exception:
+                continue
+            if str(annot.get("/T", "")) in _FIXED_FONT_FIELDS:
+                annot[NameObject("/DA")] = create_string_object(_FIXED_DA)
 
     buf = io.BytesIO()
     writer.write(buf)
