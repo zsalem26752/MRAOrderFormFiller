@@ -771,19 +771,19 @@ body.past-mode #tab-live     { display: none; }
 <!-- ═══════════════ RUN MODE MODAL ═══════════════ -->
 <div id="run-mode-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center" onclick="if(event.target===this)closeRunModal()">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:32px;max-width:460px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,.6)"  onclick="event.stopPropagation()">
-    <h2 style="margin:0 0 8px;font-size:18px;letter-spacing:.04em">Select Run Mode</h2>
-    <p style="color:var(--muted);font-size:13px;margin:0 0 24px">Choose how the agent should move between orders.</p>
+    <h2 style="margin:0 0 8px;font-size:18px;letter-spacing:.04em;color:#fefefe">Select Run Mode</h2>
+    <p style="color:#fefefe;font-size:13px;margin:0 0 24px;opacity:.7">Choose how the agent should move between orders.</p>
     <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:24px">
       <button onclick="startRunWithMode(false)" style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:16px 18px;border-radius:10px;border:1px solid var(--border);background:var(--bg);cursor:pointer;text-align:left;transition:border-color .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-        <span style="font-size:14px;font-weight:700;color:var(--fg)">&#9654;&#9654; Auto Run</span>
-        <span style="font-size:12px;color:var(--muted)">Process all orders back-to-back without stopping.</span>
+        <span style="font-size:14px;font-weight:700;color:#fefefe">&#9654;&#9654; Auto Run</span>
+        <span style="font-size:12px;color:#fefefe;opacity:.6">Process all orders back-to-back without stopping.</span>
       </button>
       <button onclick="startRunWithMode(true)" style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:16px 18px;border-radius:10px;border:1px solid var(--border);background:var(--bg);cursor:pointer;text-align:left;transition:border-color .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-        <span style="font-size:14px;font-weight:700;color:var(--fg)">&#9646;&#9646; One At A Time</span>
-        <span style="font-size:12px;color:var(--muted)">Pause after each order so you can review before continuing.</span>
+        <span style="font-size:14px;font-weight:700;color:#fefefe">&#9646;&#9646; One At A Time</span>
+        <span style="font-size:12px;color:#fefefe;opacity:.6">Pause after each order so you can review before continuing.</span>
       </button>
     </div>
-    <button onclick="closeRunModal()" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-size:13px">Cancel</button>
+    <button onclick="closeRunModal()" style="width:100%;padding:9px;border-radius:8px;border:1px solid var(--border);background:transparent;color:#fefefe;opacity:.6;cursor:pointer;font-size:13px">Cancel</button>
   </div>
 </div>
 
@@ -993,12 +993,13 @@ function stopRun() {
   var stopBtn   = document.getElementById("stop-btn");
   var lrStopBtn = document.getElementById("lr-stop-btn");
   [stopBtn, lrStopBtn].forEach(function(b) { if (b) { b.disabled = true; b.textContent = "Stopping…"; } });
+  // Immediately hide the pause banner so it doesn't look frozen
+  document.getElementById("lr-pause-banner").style.display = "none";
+  showLrStatus("Stopping — finishing current task…", true);
   fetch("/api/stop", {method:"POST"}).then(r => r.json()).then(d => {
     if (!d.ok) {
       showToast(d.message || "Could not stop run", true);
       [stopBtn, lrStopBtn].forEach(function(b) { if (b) b.disabled = false; });
-    } else {
-      showToast("Stop requested — will finish current task", false);
     }
   }).catch(function() { [stopBtn, lrStopBtn].forEach(function(b) { if (b) b.disabled = false; }); });
 }
