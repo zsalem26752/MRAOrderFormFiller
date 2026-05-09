@@ -1001,8 +1001,11 @@ function pollStatus() {
       stopBtn.disabled      = false;
       if (lrRunBtn2) { lrRunBtn2.style.display = "inline-flex"; lrRunBtn2.disabled = false; lrRunBtn2.innerHTML = "&#9654; Run Now"; }
       if (lrStopBtn) { lrStopBtn.style.display = "none"; lrStopBtn.disabled = false; }
+      document.getElementById("lr-pause-banner").style.display = "none";
       if (was && !_isRunning) {
-        // run just finished — reload history
+        // run just finished — clean up live tab in case SSE stream dropped
+        if (_lrSSE) { _lrSSE.close(); _lrSSE = null; }
+        showLrStatus("Run complete.", false);
         loadHistory();
       }
     }
