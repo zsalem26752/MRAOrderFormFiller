@@ -219,6 +219,8 @@ def api_history():
 
 @app.route("/api/schedule")
 def api_schedule():
+    if os.environ.get("AUTO_SCHEDULER", "").strip() != "1":
+        return jsonify([])
     return jsonify(next_scheduled_runs(3))
 
 @app.route("/api/status")
@@ -819,8 +821,10 @@ body.past-mode #tab-live     { display: none; }
 <div id="tab-overview">
   <div id="control-panel">
     <div>
-      <div class="panel-label">Next Scheduled Runs</div>
-      <div id="schedule-cards"><span style="color:var(--muted);font-size:12px">Loading…</span></div>
+      <div id="schedule-section">
+        <div class="panel-label">Next Scheduled Runs</div>
+        <div id="schedule-cards"><span style="color:var(--muted);font-size:12px">Loading…</span></div>
+      </div>
     </div>
       <div style="display:flex;gap:8px;align-self:flex-end">
       <button id="stop-btn" onclick="stopRun()" style="display:none;padding:9px 18px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;background:#ef4444;color:#fff;transition:opacity .15s">&#9632; Stop</button>
@@ -1083,15 +1087,18 @@ function resumeRun() {
 function loadSchedule() {
   fetch("/api/schedule").then(r => r.json()).then(data => {
     _schedData = data;
-    renderScheduleCards();
-    if (_countdownId) clearInterval(_countdownId);
-    _countdownId = setInterval(renderScheduleCards, 30000);
+    document.getElementById("schedule-section").style.display = data.length ? "" : "none";
+    if (data.length) {
+      renderScheduleCards();
+      if (_countdownId) clearInterval(_countdownId);
+      _countdownId = setInterval(renderScheduleCards, 30000);
+    }
   });
 }
 
 function renderScheduleCards() {
   var el = document.getElementById("schedule-cards");
-  if (!_schedData.length) { el.innerHTML = '<span style="color:var(--muted);font-size:12px">None scheduled</span>'; return; }
+  if (!_schedData.length) { el.innerHTML = ""; return; }
   var now = new Date();
   el.innerHTML = _schedData.map(function(iso) {
     var dt   = new Date(iso);
