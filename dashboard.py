@@ -217,6 +217,13 @@ def index():
 def api_history():
     return jsonify(load_history())
 
+@app.route("/api/history/clear", methods=["POST"])
+def api_history_clear():
+    """Delete all run history."""
+    if os.path.exists(HISTORY_PATH):
+        os.remove(HISTORY_PATH)
+    return jsonify({"ok": True})
+
 @app.route("/api/schedule")
 def api_schedule():
     if os.environ.get("AUTO_SCHEDULER", "").strip() != "1":
@@ -839,9 +846,9 @@ body.past-mode #tab-live     { display: none; }
 <div id="tab-overview">
   <div id="control-panel">
     <div>
-      <div id="schedule-section">
+      <div id="schedule-section" style="display:none">
         <div class="panel-label">Next Scheduled Runs</div>
-        <div id="schedule-cards"><span style="color:var(--muted);font-size:12px">Loading…</span></div>
+        <div id="schedule-cards"></div>
       </div>
     </div>
       <div style="display:flex;gap:8px;align-self:flex-end">
@@ -859,6 +866,7 @@ body.past-mode #tab-live     { display: none; }
   <div id="list-toolbar">
     <button class="list-ctrl-btn" onclick="expandAll()">&#9660; Expand All</button>
     <button class="list-ctrl-btn" onclick="collapseAll()">&#9650; Collapse All</button>
+    <button class="list-ctrl-btn" onclick="clearHistory()" style="margin-left:auto;color:#ef4444;border-color:#ef4444">&#128465; Clear History</button>
   </div>
   <div id="list"></div>
   <div id="ov-empty">No run history yet. Hit <strong>Run Now</strong> to kick off the first run.</div>
@@ -1238,6 +1246,13 @@ function toggleRun(i) {
 }
 function expandAll()  { document.querySelectorAll(".run").forEach(function(r) { r.classList.add("open"); }); }
 function collapseAll(){ document.querySelectorAll(".run").forEach(function(r) { r.classList.remove("open"); }); }
+
+function clearHistory() {
+  if (!confirm("Clear all run history? This cannot be undone.")) return;
+  fetch("/api/history/clear", {method:"POST"}).then(r => r.json()).then(d => {
+    if (d.ok) { loadHistory(); showToast("History cleared", false); }
+  });
+}
 
 // ── Live Run ─────────────────────────────────────────────────────────────────
 function startLiveRun() {
