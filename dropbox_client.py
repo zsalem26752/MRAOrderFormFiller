@@ -31,6 +31,7 @@ class DropboxClient:
                     oauth2_refresh_token=config.DROPBOX_REFRESH_TOKEN,
                     app_key=config.DROPBOX_APP_KEY,
                     app_secret=config.DROPBOX_APP_SECRET,
+                    timeout=60,
                 )
                 # For Dropbox Business/Team accounts, switch to the team root namespace
                 # so paths like /Mr Awnings/... resolve correctly.

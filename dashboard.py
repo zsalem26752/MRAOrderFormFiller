@@ -263,6 +263,24 @@ def api_stop():
     _agent_mod.request_stop()
     return jsonify({"ok": True})
 
+@app.route("/api/force-reset", methods=["POST"])
+def api_force_reset():
+    """Force-clear all run state. Use when the agent thread is stuck and the
+    dashboard is permanently locked. The orphaned thread will eventually time
+    out on its own API call and exit cleanly."""
+    global _live_active
+    import agent as _agent_mod
+    with _live_lock:
+        _live_active = False
+    try:
+        with _agent_mod._run_lock:
+            _agent_mod._run_active     = False
+            _agent_mod._stop_requested = False
+        _agent_mod._resume_event.set()
+    except Exception:
+        pass
+    return jsonify({"ok": True})
+
 @app.route("/api/events")
 def api_events():
     """SSE stream of live run events."""
@@ -949,17 +967,18 @@ body.past-mode #tab-live     { display: none; }
 
 <script>
 // ── Shared state ────────────────────────────────────────────────────────────
-var _activeTab   = "overview";
-var _isRunning   = false;
-var _schedData   = [];
-var _countdownId = null;
-var _histData    = [];
-var _lrSSE       = null;
-var _lrPdfs      = {};        // po → {has_invoice, has_form, item_name, model}
-var _lrSelected  = null;      // currently selected PO in live sidebar
-var _prHistory   = [];
-var _prSelRun    = -1;
-var _prSelOrder  = -1;
+var _activeTab    = "overview";
+var _isRunning    = false;
+var _schedData    = [];
+var _countdownId  = null;
+var _histData     = [];
+var _lrSSE        = null;
+var _lrPdfs       = {};        // po → {has_invoice, has_form, item_name, model}
+var _lrSelected   = null;      // currently selected PO in live sidebar
+var _prHistory    = [];
+var _prSelRun     = -1;
+var _prSelOrder   = -1;
+var _stopTimeout  = null;      // force-reset timer after stop is requested
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 function switchTab(tab) {
@@ -1008,6 +1027,7 @@ function pollStatus() {
       document.getElementById("lr-pause-banner").style.display = "none";
       if (was && !_isRunning) {
         // run just finished — clean up live tab in case SSE stream dropped
+        _clearStopTimeout();
         if (_lrSSE) { _lrSSE.close(); _lrSSE = null; }
         showLrStatus("Run complete.", false);
         loadHistory();
@@ -1018,18 +1038,35 @@ function pollStatus() {
 }
 
 // ── Stop ─────────────────────────────────────────────────────────────────────
+function _clearStopTimeout() {
+  if (_stopTimeout) { clearTimeout(_stopTimeout); _stopTimeout = null; }
+}
+
+function _forceReset() {
+  _clearStopTimeout();
+  fetch("/api/force-reset", {method:"POST"}).then(function() {
+    showToast("Run timed out — dashboard unlocked. You can start a new run.", true);
+    showLrStatus("Timed out — run was force-stopped.", false);
+    document.getElementById("lr-pause-banner").style.display = "none";
+    loadHistory();
+  });
+}
+
 function stopRun() {
   var stopBtn   = document.getElementById("stop-btn");
   var lrStopBtn = document.getElementById("lr-stop-btn");
   [stopBtn, lrStopBtn].forEach(function(b) { if (b) { b.disabled = true; b.textContent = "Stopping…"; } });
-  // Immediately hide the pause banner so it doesn't look frozen
   document.getElementById("lr-pause-banner").style.display = "none";
   showLrStatus("Stopping — finishing current task…", true);
   fetch("/api/stop", {method:"POST"}).then(r => r.json()).then(d => {
     if (!d.ok) {
       showToast(d.message || "Could not stop run", true);
       [stopBtn, lrStopBtn].forEach(function(b) { if (b) b.disabled = false; });
+      return;
     }
+    // Safety net: if the run doesn't end within 90s, force-reset the dashboard
+    _clearStopTimeout();
+    _stopTimeout = setTimeout(_forceReset, 90000);
   }).catch(function() { [stopBtn, lrStopBtn].forEach(function(b) { if (b) b.disabled = false; }); });
 }
 
@@ -1271,12 +1308,14 @@ function startLiveRun() {
   });
 
   _lrSSE.addEventListener("stopped", function(e) {
+    _clearStopTimeout();
     document.getElementById("lr-pause-banner").style.display = "none";
     showLrStatus("Run stopped by user.", false);
     appendLog("⛔ Run stopped by user.", "warn");
   });
 
   _lrSSE.addEventListener("complete", function(e) {
+    _clearStopTimeout();
     var d = JSON.parse(e.data);
     _lrSSE.close(); _lrSSE = null;
     document.getElementById("lr-pause-banner").style.display = "none";
