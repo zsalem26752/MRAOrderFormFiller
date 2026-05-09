@@ -2,7 +2,7 @@
 dashboard.py — MR. AWNINGS · Order Form Filler Dashboard
 
 Three tabs in one place:
-  • Overview      — run history, next scheduled runs, Run Now button
+  • Overview      — run history, Run Now button
   • Live Run      — watch the agent work in real time with live log streaming
                     + side-by-side invoice (Zoho) and filled order form PDFs
   • Past Runs     — browse saved runs, see which orders were filled/failed
@@ -19,19 +19,11 @@ from flask import Flask, Response, jsonify, request, render_template_string, sen
 from config import Config
 from dropbox_client import DropboxClient
 
-try:
-    from zoneinfo import ZoneInfo
-    SCHED_TZ = ZoneInfo("America/New_York")
-except ImportError:
-    import pytz
-    SCHED_TZ = pytz.timezone("America/New_York")
-
 app = Flask(__name__)
 
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 HISTORY_PATH  = os.path.join(BASE_DIR, "run_history.json")
 AGENT_PATH    = os.path.join(BASE_DIR, "agent.py")
-SCHED_HOURS   = [9, 21]
 
 sys.path.insert(0, BASE_DIR)
 
@@ -193,20 +185,6 @@ def load_history():
     return normalised
 
 
-def next_scheduled_runs(count=3):
-    now = datetime.now(SCHED_TZ)
-    results = []
-    for day_offset in range(8):
-        for hour in sorted(SCHED_HOURS):
-            dt = now.replace(hour=hour, minute=0, second=0, microsecond=0) \
-                 + timedelta(days=day_offset)
-            if dt > now:
-                results.append(dt.isoformat())
-                if len(results) == count:
-                    return results
-    return results
-
-
 # ── API routes ─────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -223,12 +201,6 @@ def api_history_clear():
     if os.path.exists(HISTORY_PATH):
         os.remove(HISTORY_PATH)
     return jsonify({"ok": True})
-
-@app.route("/api/schedule")
-def api_schedule():
-    if os.environ.get("AUTO_SCHEDULER", "").strip() != "1":
-        return jsonify([])
-    return jsonify(next_scheduled_runs(3))
 
 @app.route("/api/status")
 def api_status():
@@ -478,14 +450,6 @@ body.past-mode #tab-live     { display: none; }
   font-size: 10px; font-weight: 600; letter-spacing: .09em;
   text-transform: uppercase; color: var(--muted); margin-bottom: 10px;
 }
-#schedule-cards { display: flex; gap: 10px; flex-wrap: wrap; }
-.sched-card {
-  background: var(--bg); border: 1px solid var(--border);
-  border-radius: 10px; padding: 10px 16px; min-width: 120px;
-}
-.sched-card-day       { font-size: 10px; color: var(--muted); margin-bottom: 2px; }
-.sched-card-time      { font-size: 14px; font-weight: 700; }
-.sched-card-countdown { font-size: 11px; color: var(--accent); margin-top: 3px; }
 #run-btn {
   display: flex; align-items: center; gap: 8px;
   padding: 9px 20px; border-radius: 8px; border: none; cursor: pointer;
@@ -845,12 +809,6 @@ body.past-mode #tab-live     { display: none; }
 <!-- ═══════════════ OVERVIEW TAB ═══════════════ -->
 <div id="tab-overview">
   <div id="control-panel">
-    <div>
-      <div id="schedule-section" style="display:none">
-        <div class="panel-label">Next Scheduled Runs</div>
-        <div id="schedule-cards"></div>
-      </div>
-    </div>
       <div style="display:flex;gap:8px;align-self:flex-end">
       <button id="stop-btn" onclick="stopRun()" style="display:none;padding:9px 18px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;background:#ef4444;color:#fff;transition:opacity .15s">&#9632; Stop</button>
       <button id="run-btn" onclick="runNow()">&#9654; Run Now</button>
@@ -977,8 +935,6 @@ body.past-mode #tab-live     { display: none; }
 // ── Shared state ────────────────────────────────────────────────────────────
 var _activeTab    = "overview";
 var _isRunning    = false;
-var _schedData    = [];
-var _countdownId  = null;
 var _histData     = [];
 var _lrSSE        = null;
 var _lrPdfs       = {};        // po → {has_invoice, has_form, item_name, model}
@@ -1126,39 +1082,6 @@ function resumeRun() {
     if (!d.ok) { showToast(d.message || "Resume failed", true); if (btn) btn.disabled = false; return; }
     document.getElementById("lr-pause-banner").style.display = "none";
   });
-}
-
-// ── Schedule cards ──────────────────────────────────────────────────────────
-function loadSchedule() {
-  fetch("/api/schedule").then(r => r.json()).then(data => {
-    _schedData = data;
-    document.getElementById("schedule-section").style.display = data.length ? "" : "none";
-    if (data.length) {
-      renderScheduleCards();
-      if (_countdownId) clearInterval(_countdownId);
-      _countdownId = setInterval(renderScheduleCards, 30000);
-    }
-  });
-}
-
-function renderScheduleCards() {
-  var el = document.getElementById("schedule-cards");
-  if (!_schedData.length) { el.innerHTML = ""; return; }
-  var now = new Date();
-  el.innerHTML = _schedData.map(function(iso) {
-    var dt   = new Date(iso);
-    var diff = Math.round((dt - now) / 60000);
-    var hrs  = Math.floor(diff / 60);
-    var mins = diff % 60;
-    var countdown = diff < 60 ? "in " + diff + "m" :
-                    "in " + hrs + "h " + (mins > 0 ? mins + "m" : "");
-    var days  = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-    var day   = days[dt.getDay()];
-    var time  = dt.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
-    return '<div class="sched-card"><div class="sched-card-day">' + day + '</div>' +
-           '<div class="sched-card-time">' + time + '</div>' +
-           '<div class="sched-card-countdown">' + countdown + '</div></div>';
-  }).join("");
 }
 
 // ── History ──────────────────────────────────────────────────────────────────
@@ -1621,7 +1544,6 @@ function showToast(msg, isErr) {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 window.addEventListener("load", function() {
-  loadSchedule();
   loadHistory();
   pollStatus();
 
