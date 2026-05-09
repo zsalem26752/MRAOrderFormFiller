@@ -134,10 +134,10 @@ class ZohoClient:
         if not invoice_id:
             raise RuntimeError(f"Invoice #{po} not found in Zoho.")
         url  = f"{self._base()}/invoices/{invoice_id}?accept=pdf"
-        resp = requests.get(url, headers=self._headers)
+        resp = requests.get(url, headers=self._headers, timeout=30)
         if resp.status_code == 401:
             self._refresh()
-            resp = requests.get(url, headers=self._headers)
+            resp = requests.get(url, headers=self._headers, timeout=30)
         resp.raise_for_status()
         return resp.content
 
@@ -151,7 +151,7 @@ class ZohoClient:
             "client_id":     self.config.ZOHO_CLIENT_ID,
             "client_secret": self.config.ZOHO_CLIENT_SECRET,
             "refresh_token": self.config.ZOHO_REFRESH_TOKEN,
-        })
+        }, timeout=30)
         resp.raise_for_status()
         self.access_token = resp.json()["access_token"]
         log.debug("Zoho access token refreshed.")
@@ -168,10 +168,10 @@ class ZohoClient:
 
     def _get(self, path: str, params: dict = None) -> dict:
         url  = f"{self._base()}{path}"
-        resp = requests.get(url, headers=self._headers, params=params)
+        resp = requests.get(url, headers=self._headers, params=params, timeout=30)
         if resp.status_code == 401:
             self._refresh()
-            resp = requests.get(url, headers=self._headers, params=params)
+            resp = requests.get(url, headers=self._headers, params=params, timeout=30)
         resp.raise_for_status()
         return resp.json()
 

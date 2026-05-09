@@ -309,6 +309,10 @@ def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
                         _push("stopped", {}, sink=event_sink)
                         break
 
+        # Write run log now so dashboard stats are up to date whether run
+        # completed normally or was stopped partway through.
+        _write_run_log(filled_orders, failed_orders, source=source)
+
         # Slack summaries
         if filled_orders:
             slack.filled_summary(filled_orders)
@@ -319,7 +323,6 @@ def run_agent(source: str = "cron", event_sink=None, job_options: dict = None):
             f"Run complete | Filled: {len(filled_orders)} | Failed: {len(failed_orders)}",
             "success" if not failed_orders else "warn",
         )
-        _write_run_log(filled_orders, failed_orders, source=source)
         _push("complete", {"filled": filled_orders, "failed": failed_orders}, sink=event_sink)
         log.info("=" * 60)
 

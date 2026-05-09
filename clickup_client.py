@@ -63,16 +63,19 @@ class ClickUpClient:
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _get(self, url, **kwargs):
+        kwargs.setdefault("timeout", 30)
         r = requests.get(url, headers=self.headers, **kwargs)
         self._raise(r)
         return r.json()
 
     def _post(self, url, **kwargs):
+        kwargs.setdefault("timeout", 30)
         r = requests.post(url, headers=self.headers, **kwargs)
         self._raise(r)
         return r.json()
 
     def _put(self, url, **kwargs):
+        kwargs.setdefault("timeout", 30)
         r = requests.put(url, headers=self.headers, **kwargs)
         self._raise(r)
         return r.json()
